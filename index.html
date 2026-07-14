@@ -57,9 +57,10 @@ const SHAPE_CIRCLE = 0;
 const SHAPE_N_GON = 1;
 const SHAPE_DOT = 2;
 
+// TODO? allow multi for vertices
 let prevX=0,prevY=0,dragging=false,focus=-1,lineMode=false,prevX_touch=0,prevY_touch=0;
-// TODO? allow multi-focus?
-let focus_edge = null;
+let focused_edges = new Set();
+let multiFocus=true;
 
 function toCanvasPos(x,y){
   return [x*(c.width/c.offsetWidth),y*(c.height/c.offsetHeight)];
@@ -72,6 +73,7 @@ addEventListener('mousedown', (event) => {
   let [x,y]=toCanvasPos(event.layerX,event.layerY);
   prevX=x;
   prevY=y;
+  multiFocus = event.shiftKey;
   alg.uiStart(x,y,event.altKey);
 });
 addEventListener('mousemove', (event) => {
@@ -97,19 +99,23 @@ addEventListener('keyup', (event) => {
     alg.graph.edges=alg.graph.edges.filter((e)=>(e.src!=deleted&&e.target!=deleted));
     focus=-1;
     redraw();
-  } else if(focus_edge!=null&& event.altKey && (event.key=="Delete"||event.key=="Backspace")){
-    let [deleted]=alg.graph.edges.splice(focus_edge,1);
-    focus_edge=null;
+  } else if(focused_edges.size>0&& event.altKey && (event.key=="Delete"||event.key=="Backspace")){
+    focused_edges.forEach(index=>{
+      let [deleted]=alg.graph.edges.splice(index,1);
+    });
+    focused_edges = new Set();
     redraw();
   } else if(focus!=-1&&event.altKey && event.code=='KeyS') {
     alg.graph.nodes[focus].shape += 1;
     alg.graph.nodes[focus].shape %= SHAPE_COUNT;
     redraw();
-  } else if(focus_edge!=null&& event.altKey && event.code=='KeyR') {
-    let edge = alg.graph.edges[focus_edge];
-    let s = edge.src;
-    edge.src = edge.target;
-    edge.target = s;
+  } else if(focused_edges.size>0&& event.altKey && event.code=='KeyR') {
+    focused_edges.forEach(index=>{
+      let edge = alg.graph.edges[index];
+      let s = edge.src;
+      edge.src = edge.target;
+      edge.target = s;
+    });
     redraw();
   } else if(focus!=-1&& !event.altKey) {
     if (event.key.length == 1) {
@@ -119,7 +125,8 @@ addEventListener('keyup', (event) => {
       alg.graph.nodes[focus].label=oldLabel.substring(0,oldLabel.length-1);
     }
     redraw();
-  } else if(focus_edge!=null&& !event.altKey) {
+  } else if(focused_edges.size == 1&& !event.altKey) {
+    let [focus_edge] = focused_edges.values();
     if (event.key.length == 1) {
       alg.graph.edges[focus_edge].label += event.key;
     } else if ((event.key=="Delete"||event.key=="Backspace")) {
@@ -127,9 +134,9 @@ addEventListener('keyup', (event) => {
       alg.graph.edges[focus_edge].label=oldLabel.substring(0,oldLabel.length-1);
     }
     redraw();
-  } else if(focus==-1 && focus_edge ==null && event.key == 'c') {
+  } else if(focus==-1 && focused_edges.size == 0 && event.key == 'c') {
     centerGraph(alg.graph.nodes);
-  } else if(focus==-1 && focus_edge ==null && event.key == 'b') {
+  } else if(focus==-1 && focused_edges.size == 0 && event.key == 'b') {
     balanceGraph(alg.graph);
   } else if(event.ctrlKey && event.code=='KeyS') {
     console.log(saveGraph(alg.graph));
@@ -177,7 +184,8 @@ class GraphView{
   uiStart(x,y,createMode){
     let min=Infinity;
     focus=-1;
-    focus_edge = null;
+    if(!multiFocus)
+      focused_edges = new Set();
     this.graph.nodes.forEach((n,i)=>{
       let d=(n.x-x)*(n.x-x)+(n.y-y)*(n.y-y);
       if(d<min&&d<1.21*n.r*n.r){
@@ -199,9 +207,17 @@ class GraphView{
         let c = (x0-x)*(x0-x)+(y0-y)*(y0-y);
         let l = -b/a;
         let d = l*l*a+2*l*b+c;
-        if(d<min&&d<1.21*LINE_WIDTH*LINE_WIDTH){
-          min=d;
-          focus_edge=i;
+        if(d<1.21*LINE_WIDTH*LINE_WIDTH){
+          if (multiFocus) {
+            if (focused_edges.has(i)) {
+              focused_edges.delete(i);
+            } else {
+              focused_edges.add(i);
+            }
+          } else if (d<min) {
+            min=d;
+            focused_edges=new Set([i]);
+          }
         }
       });
     }
@@ -238,7 +254,7 @@ class EditGraph extends GraphView{
   uiStart(x,y,createMode){
     super.uiStart(x,y,createMode);
     lineMode=(focus!=-1)&&createMode;
-    if(focus==-1&&focus_edge == null&&createMode){
+    if(focus==-1&&focused_edges.size == 0&&createMode){
       focus=this.graph.nodes.length;
       this.graph.nodes.push(new Node(x,y));
     }
@@ -375,7 +391,7 @@ function drawGraph(graph,nodeFormat=defaultNodeFormat,edgeFormat=defaultEdgeForm
     drawArrow(e.target.x-rT*dx/l,e.target.y-rT*dy/l,dx,dy);
     ctx.moveTo(e.src.x+rS*dx/l,e.src.y+rS*dy/l);
     ctx.lineTo(e.target.x-rT*dx/l,e.target.y-rT*dy/l);
-    if(edgeFormat(e,i==focus_edge))
+    if(edgeFormat(e,focused_edges.has(i)))
       ctx.stroke();
   });
   // draw edge labels
@@ -383,7 +399,7 @@ function drawGraph(graph,nodeFormat=defaultNodeFormat,edgeFormat=defaultEdgeForm
     let dx=e.target.x-e.src.x;
     let dy=e.target.y-e.src.y;
     let l=Math.sqrt(dx*dx+dy*dy);
-    if(edgeFormat(e,i==focus_edge)){
+    if(edgeFormat(e,focused_edges.has(i))){
       let measure=ctx.measureText(e.label);
       ctx.fillStyle=BASE_COLOR;
       let centerX = (e.src.x + 2*e.target.x)/3;
