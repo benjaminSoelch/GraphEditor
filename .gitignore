@@ -1,0 +1,5 @@
+graph.txt
+.DS_Store
+images/*
+tmp/*
+*.zip

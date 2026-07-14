@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html>
+<meta name="viewport" content="width=device-width, user-scalable=no">
+<body style="width: 100%;height: 100%;background-color:#ffffff;overscroll-behavior-y: contain;">
+<canvas height="1080" width="1920" style="position:fixed;left:0;top:0;width:100%;height:100%;" id="canvasId">Canvas</canvas>
+<div style="position:fixed;z-index:1;left:1%;top:1%;width:max-content;height:min-content;color:#222222" id="mode">RUN</div>
+</body>
+<script>
+let c=document.getElementById("canvasId");
+let ctx=c.getContext('2d');
+
+// TODO: support labels and shapes
+// load/save graph as string
+// 1) nodes in format [nodeID]_[xPos]_[yPos]
+// 2) edges in format [srcID]_[targetID]_[capacity]
+// nodeIDs are sequences of letters, coordinates and capacity have to be integers
+const letters="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+function loadGraph(str){
+  let data = JSON.parse(str);
+  let nodeData=data["nodes"];
+  let edgeData=data["edges"];
+  let nodes=[];
+  let edges=[];
+  nodeData.forEach(data=>{
+    let node=new Node(data.x,data.y,data.id);
+    Object.entries(data).forEach(([k,v])=>node[k]=v);
+    nodes.push(node);
+  });
+  edgeData.forEach(data=>{
+    let edge=new Edge(nodes[data.src],nodes[data.target],data.cap||0);
+    Object.entries(data).forEach(([k,v])=>{
+      if(k=="src"||k=="target")return;
+      edge[k]=v;
+    });
+    edges.push(edge);
+  });
+  return new Graph(nodes,edges);
+}
+function saveGraph(graph){
+  let edgeData = graph.edges.map(edge=>{
+    let val = {...edge};
+    let srcIndex=graph.nodes.indexOf(edge.src);
+    let targetIndex=graph.nodes.indexOf(edge.target);
+    val.src=srcIndex;val.target=targetIndex;
+    return val;
+  });
+  return JSON.stringify({"nodes":graph.nodes,"edges":edgeData});
+}
+const urlParams=new URLSearchParams((new URL(document.URL)).search);
+let graphData=urlParams.get("graph");
+
+const r0=20;
+const LINE_WIDTH = 5;
+const MIN_RADIUS = 3;
+
+const SHAPE_COUNT = 3;
+const SHAPE_CIRCLE = 0;
+const SHAPE_N_GON = 1;
+const SHAPE_DOT = 2;
+
+let prevX=0,prevY=0,dragging=false,focus=-1,lineMode=false,prevX_touch=0,prevY_touch=0;
+// TODO? allow multi-focus?
+let focus_edge = null;
+
+function toCanvasPos(x,y){
+  return [x*(c.width/c.offsetWidth),y*(c.height/c.offsetHeight)];
+}
+
+function toggleEditMode(editMode=undefined){
+  let modeButton=document.getElementById("mode");
+  if(editMode!==undefined?editMode:modeButton.innerHTML=="EDIT"){
+    alg=new EditGraph(alg.graph);
+    modeButton.innerHTML="RUN";
+  }else{
+    console.log("run is not supported");
+    modeButton.innerHTML="EDIT";
+    toggleEditMode(true);
+  }
+  redraw();
+}
+addEventListener('mousedown', (event) => {
+  if(event.target.id=="mode"){
+    toggleEditMode();
+  }
+  if(event.target.id!="canvasId")
+    return;
+  dragging=true;
+  let [x,y]=toCanvasPos(event.layerX,event.layerY);
+  prevX=x;
+  prevY=y;
+  alg.uiStart(x,y,event.altKey);
+});
+addEventListener('mousemove', (event) => {
+  if(event.target.id!="canvasId")
+    return;
+  if(dragging){
+    let [x,y]=toCanvasPos(event.layerX,event.layerY);
+    let [dx,dy]=[x-prevX,y-prevY];
+    prevX=x;
+    prevY=y;
+    alg.uiDrag(x,y,dx,dy);
+  }
+});
+addEventListener('mouseup', (event) => {
+  dragging=false;
+  let [x,y]=toCanvasPos(event.layerX,event.layerY);
+  alg.uiEnd(x,y);
+});
+
+addEventListener('keyup', (event) => {
+  if(focus!=-1&& event.altKey && (event.key=="Delete"||event.key=="Backspace")){
+    let [deleted]=alg.graph.nodes.splice(focus,1);
+    alg.graph.edges=alg.graph.edges.filter((e)=>(e.src!=deleted&&e.target!=deleted));
+    focus=-1;
+    redraw();
+  } else if(focus_edge!=null&& event.altKey && (event.key=="Delete"||event.key=="Backspace")){
+    let [deleted]=alg.graph.edges.splice(focus_edge,1);
+    focus_edge=null;
+    redraw();
+  } else if(focus!=-1&&event.altKey && event.code=='KeyS') {
+    alg.graph.nodes[focus].shape += 1;
+    alg.graph.nodes[focus].shape %= SHAPE_COUNT;
+    redraw();
+  } else if(focus_edge!=null&& event.altKey && event.code=='KeyR') {
+    let edge = alg.graph.edges[focus_edge];
+    let s = edge.src;
+    edge.src = edge.target;
+    edge.target = s;
+    redraw();
+  } else if(focus!=-1&& !event.altKey) {
+    if (event.key.length == 1) {
+      alg.graph.nodes[focus].label += event.key;
+    } else if ((event.key=="Delete"||event.key=="Backspace")) {
+      let oldLabel = alg.graph.nodes[focus].label;
+      alg.graph.nodes[focus].label=oldLabel.substring(0,oldLabel.length-1);
+    }
+    redraw();
+  } else if(focus_edge!=null&& !event.altKey) {
+    if (event.key.length == 1) {
+      alg.graph.edges[focus_edge].label += event.key;
+    } else if ((event.key=="Delete"||event.key=="Backspace")) {
+      let oldLabel = alg.graph.edges[focus_edge].label;
+      alg.graph.edges[focus_edge].label=oldLabel.substring(0,oldLabel.length-1);
+    }
+    redraw();
+  } else if(focus==-1 && focus_edge ==null && event.key == 'c') {
+    centerGraph(alg.graph.nodes);
+  } else if(focus==-1 && focus_edge ==null && event.key == 'b') {
+    balanceGraph(alg.graph);
+  } else if(event.ctrlKey && event.code=='KeyS') {
+    console.log(saveGraph(alg.graph));
+  }
+})
+
+class Node{
+  constructor(x,y,id=undefined){
+    this.x=x;
+    this.y=y;
+    this.r=r0;
+    this.id=id;
+    this.shape = SHAPE_CIRCLE;
+    this.label = "";
+  }
+}
+class Edge{
+  constructor(src,target){
+    this.src=src;
+    this.target=target;
+    this.label="";
+  }
+}
+
+const BASE_COLOR="#222222";
+const FOCUS_COLOR="#ff8000";
+
+class Graph{
+  constructor(nodes=undefined,edges=undefined){
+    this.nodes=nodes===undefined?[]:nodes;
+    this.edges=edges===undefined?[]:edges;
+  }
+}
+
+class GraphView{
+  constructor(graph){
+    this.graph=graph;
+  }
+  step(){
+    return false;
+  }
+  draw(){
+    drawGraph(this.graph);
+  }
+  uiStart(x,y,createMode){
+    let min=Infinity;
+    focus=-1;
+    focus_edge = null;
+    this.graph.nodes.forEach((n,i)=>{
+      let d=(n.x-x)*(n.x-x)+(n.y-y)*(n.y-y);
+      if(d<min&&d<1.21*n.r*n.r){
+        min=d;
+        focus=i;
+      }
+    });
+    if (focus == -1) {
+      let min=Infinity;
+      this.graph.edges.forEach((e,i)=>{
+        let x0 = e.src.x;
+        let y0 = e.src.y;
+        let x1 = e.target.x;
+        let y1 = e.target.y;
+        // min (x0-x+l*(x1-x0))^2+(y0-y+l*(y1-y0))^2
+        // min (x0-x)^2+(y0-y)^2-2l((x0-x)(x1-x0)+(y0-y)(y1-y0))+l^2((x1-x0)^2+(y1-y0)^2)
+        let a = (x1-x0)*(x1-x0)+(y1-y0)*(y1-y0);
+        let b = -((x0-x)*(x1-x0)+(y0-y)*(y1-y0));
+        let c = (x0-x)*(x0-x)+(y0-y)*(y0-y);
+        let l = -b/a;
+        let d = l*l*a+2*l*b+c;
+        if(d<min&&d<1.21*LINE_WIDTH*LINE_WIDTH){
+          min=d;
+          focus_edge=i;
+        }
+      });
+    }
+    redraw();
+  }
+  uiDrag(x,y,dx,dy){
+    if(focus!=-1){
+      this.graph.nodes[focus].x+=dx;
+      this.graph.nodes[focus].y+=dy;
+      redraw();
+    }
+  }
+  uiEnd(x,y){
+    redraw();
+  }
+}
+
+
+// TODO add undo-redo functionality
+// TODO ability to move and scale drawing region
+// TODO allow naming nodes
+
+class EditGraph extends GraphView{
+  constructor(graph){
+    super(graph);
+  }
+  step(){
+    return false;
+  }
+  draw(){
+    drawGraph(this.graph);
+  }
+
+  uiStart(x,y,createMode){
+    super.uiStart(x,y,createMode);
+    lineMode=(focus!=-1)&&createMode;
+    if(focus==-1&&focus_edge == null&&createMode){
+      focus=this.graph.nodes.length;
+      this.graph.nodes.push(new Node(x,y));
+    }
+    redraw();
+  }
+  uiDrag(x,y,dx,dy){
+    if(lineMode){
+      redraw();
+      ctx.beginPath();
+      let r=this.graph.nodes[focus];
+      dx=x-this.graph.nodes[focus].x;
+      dy=y-this.graph.nodes[focus].y;
+      let l=Math.sqrt(dx*dx+dy*dy);
+      if(l>r){
+        ctx.moveTo(this.graph.nodes[focus].x+r*dx/l,this.graph.nodes[focus].y+r*dy/l);
+      }else{
+        ctx.moveTo(this.graph.nodes[focus].x,this.graph.nodes[focus].y);
+      }
+      ctx.lineTo(x,y);
+      ctx.stroke();
+    }else{
+      super.uiDrag(x,y,dx,dy);
+    }
+  }
+  uiEnd(x,y){
+    if(lineMode){
+      lineMode=false;
+      let min=Infinity,target=-1;
+      this.graph.nodes.forEach((n,i)=>{
+        let d=(n.x-x)*(n.x-x)+(n.y-y)*(n.y-y);
+        if(d<min&&d<n.r*n.r){
+          min=d;
+          target=i;
+        }
+      });
+      if(target!=-1&&target!=focus){
+        let edge=undefined;
+        this.graph.edges.forEach(e=>{
+          if(e.src==this.graph.nodes[focus]&&e.target==this.graph.nodes[target])
+            edge=e;
+        });
+        if(edge===undefined){
+          this.graph.edges.push(new Edge(this.graph.nodes[focus],this.graph.nodes[target]));
+        }
+      }
+      redraw();
+    }
+  }
+}
+
+let alg= new GraphView(new Graph());
+toggleEditMode(true);
+
+function redraw(){
+  if(alg!==undefined){
+    alg.draw();
+  }
+}
+
+function defaultNodeFormat(node,isFocus){
+  ctx.strokeStyle=isFocus?FOCUS_COLOR:BASE_COLOR;
+  return true;
+}
+function defaultEdgeFormat(node,isFocus){
+  ctx.strokeStyle=isFocus?FOCUS_COLOR:BASE_COLOR;
+  return true;
+}
+
+
+/**draw arrow head at x,y pointing in direction given by (dx,dy)*/
+function drawArrow(x,y,dx,dy,l=15){
+  let a=Math.atan2(dy,dx);
+  ctx.beginPath();
+  ctx.moveTo(x-l*Math.cos(a-Math.PI/6),y-l*Math.sin(a-Math.PI/6));
+  ctx.lineTo(x,y);
+  ctx.lineTo(x-l*Math.cos(a+Math.PI/6),y-l*Math.sin(a+Math.PI/6));
+  ctx.stroke();
+}
+
+/**
+nodeFormat: (node,isFocused)->(showNode) //update Context for node
+edgeFormat: (edge,isFocused)->(showEdge)           //update Context for edge
+*/
+function drawGraph(graph,nodeFormat=defaultNodeFormat,edgeFormat=defaultEdgeFormat){
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.strokeStyle=BASE_COLOR;
+  ctx.lineWidth=LINE_WIDTH;
+  ctx.font="30px sans-serif"
+  ctx.textAlign = "center"; // Center horizontally
+  ctx.textBaseline = "middle"; // Center vertically
+  graph.nodes.forEach((n,i)=>{
+    if(nodeFormat(n,i==focus)){
+      if(n.label) {
+        ctx.fillText(n.label,n.x,n.y);
+      }
+      ctx.beginPath();
+      switch(n.shape) {
+        case SHAPE_CIRCLE:
+          ctx.arc(n.x,n.y,n.r,0,2*Math.PI);
+        break;
+        case SHAPE_DOT:
+          ctx.arc(n.x,n.y,MIN_RADIUS,0,2*Math.PI);
+        break;
+        case SHAPE_N_GON:
+          ctx.moveTo(n.x,n.y+n.r);
+          // TODO? store edges in vertex 
+          let vertices=0;
+          graph.edges.forEach(e=>{
+            if(e.src==n||e.target==n)
+              vertices++;
+          });
+          if(vertices<3) {
+            vertices=(vertices&1)?3:4;
+          }
+          ctx.moveTo(n.x,n.y);
+          for(let i=0;i<=vertices;i++) {
+            let a = 2*Math.PI*i/vertices;
+            ctx.lineTo(n.x+n.r*Math.sin(a),n.y+n.r*Math.cos(a));
+          }
+          ctx.lineTo(n.x,n.y);
+        break;
+        default:console.error("unsupported shape: "+n.shape);
+      }
+      ctx.stroke();
+    }
+  });
+  // TODO? connect arrows to corners of n-gon nodes (in fixed order)
+  graph.edges.forEach((e,i)=>{
+    ctx.beginPath();
+    let dx=e.target.x-e.src.x;
+    let dy=e.target.y-e.src.y;
+    let l=Math.sqrt(dx*dx+dy*dy);
+    let rT = e.target.shape == SHAPE_DOT ? 0 : e.target.r;
+    let rS = e.src.shape == SHAPE_DOT ? 0 : e.src.r;
+    drawArrow(e.target.x-rT*dx/l,e.target.y-rT*dy/l,dx,dy);
+    ctx.moveTo(e.src.x+rS*dx/l,e.src.y+rS*dy/l);
+    ctx.lineTo(e.target.x-rT*dx/l,e.target.y-rT*dy/l);
+    if(edgeFormat(e,i==focus_edge))
+      ctx.stroke();
+  });
+  // draw edge labels
+  graph.edges.forEach((e,i)=>{
+    let dx=e.target.x-e.src.x;
+    let dy=e.target.y-e.src.y;
+    let l=Math.sqrt(dx*dx+dy*dy);
+    if(edgeFormat(e,i==focus_edge)){
+      let measure=ctx.measureText(e.label);
+      ctx.fillStyle=BASE_COLOR;
+      let centerX = (e.src.x + 2*e.target.x)/3;
+      let centerY = (e.src.y + 2*e.target.y)/3;
+      if(Math.abs(dx)>=Math.abs(dy)){ // horizontal edges -> draw number above edge
+        ctx.fillText(e.label,centerX-measure.width/2,centerY-2*LINE_WIDTH);
+      }else{ // vertical edges -> draw number to left/right of edge depending on angle
+        ctx.fillText(e.label,centerX+(2*LINE_WIDTH+measure.width/2)*(dx*dy>0?1:-1),centerY);
+      }
+    }
+  });
+}
+
+
+function centerGraph(nodes,cX,cY){
+  let X=0,Y=0;
+  if(cX===undefined)
+    cX = c.width/2;
+  if(cY===undefined)
+    cY = c.height/2;
+  nodes.forEach(n=>{X+=n.x;Y+=n.y});
+  X/=nodes.length;
+  Y/=nodes.length;
+  nodes.forEach(n=>{n.x+=cX-X;n.y+=cY-Y;});
+}
+
+let G = 10;
+let K = 0.1;
+let F_MAX = 100;
+let R = 50;
+let m = 0.5;
+let ITERATIONS = 2500;
+
+function balanceGraph(graph,cX,cY){
+  let delta = new Array(graph.nodes.length);
+  let nodeComponents = new Map([]);
+  function nodeKey(n){return (n.id||"")+":"+n.x+","+n.y;}
+  graph.nodes.forEach(n=>{
+    n.v=[0,0];
+    nodeComponents.set(nodeKey(n),[n]);
+  });
+  // find connected components
+  graph.edges.forEach(e=>{
+    let s = e.src;
+    let t = e.target;
+    let cs = nodeComponents.get(nodeKey(s));
+    let ct = nodeComponents.get(nodeKey(t));
+    if(cs==ct)return;
+    let c = cs.concat(ct);
+    c.forEach(x=>nodeComponents.set(nodeKey(x),c));
+  });
+  let components = [];
+  {
+    let used = new WeakSet();
+    nodeComponents.forEach((v,k)=>{
+      if (used.has(k))return;
+      v.forEach(n=>used.add(n));
+      components.push(v);
+    });
+  }
+  // TODO? is there a way to make graph converge to axis-aligned solution
+  for(let i=0;i<ITERATIONS;i++) {
+    // nodes within  repel each other
+    components.forEach(component=>{
+      component.forEach(n0=>{
+        n0.F=[0,0];
+        component.forEach(n=>{
+          if(n==n0)return;
+          let dx = n.x-n0.x;
+          let dy = n.y-n0.y;
+          let F = -G/Math.pow(dx*dx+dy*dy,3/2); // r/|r|^3
+          n0.F[0]+=F*dx;n0.F[1]+=F*dy;
+        });
+      });
+    });
+    // edges act as springs
+    graph.edges.forEach(e=>{
+      const s = e.src;
+      const t = e.target;
+        let dx = s.x-t.x;
+        let dy = s.y-t.y;
+        let r = Math.sqrt(dx*dx+dy*dy);
+        let rS = s.shape == SHAPE_DOT ? 0 : s.r;
+        let rT = t.shape == SHAPE_DOT ? 0 : t.r;
+        let F = -K*((R+rS+rT)-r)/(r); // r/|r|^2
+        t.F[0]+=F*dx;t.F[1]+=F*dy;
+        s.F[0]-=F*dx;s.F[1]-=F*dy;
+    });
+    graph.nodes.forEach(n=>{
+      if(n.F[0]*n.F[0]+n.F[1]*n.F[1]>F_MAX) {
+        let r = n.F[0]*n.F[0]+n.F[1]*n.F[1];
+        n.F[0]*=F_MAX/r;
+        n.F[1]*=F_MAX/r;
+      }
+      n.v[0]=(1-m)*n.v[0]+n.F[0];
+      n.v[1]=(1-m)*n.v[1]+n.F[1];
+      n.x+=n.v[0];
+      n.y+=n.v[1];
+    });
+  }
+  centerGraph(graph.nodes,cX,cY);
+  redraw();
+}
+
+</script>
+</html>
