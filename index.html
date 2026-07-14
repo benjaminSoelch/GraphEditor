@@ -3,7 +3,6 @@
 <meta name="viewport" content="width=device-width, user-scalable=no">
 <body style="width: 100%;height: 100%;background-color:#ffffff;overscroll-behavior-y: contain;">
 <canvas height="1080" width="1920" style="position:fixed;left:0;top:0;width:100%;height:100%;" id="canvasId">Canvas</canvas>
-<div style="position:fixed;z-index:1;left:1%;top:1%;width:max-content;height:min-content;color:#222222" id="mode">RUN</div>
 </body>
 <script>
 let c=document.getElementById("canvasId");
@@ -66,22 +65,7 @@ function toCanvasPos(x,y){
   return [x*(c.width/c.offsetWidth),y*(c.height/c.offsetHeight)];
 }
 
-function toggleEditMode(editMode=undefined){
-  let modeButton=document.getElementById("mode");
-  if(editMode!==undefined?editMode:modeButton.innerHTML=="EDIT"){
-    alg=new EditGraph(alg.graph);
-    modeButton.innerHTML="RUN";
-  }else{
-    console.log("run is not supported");
-    modeButton.innerHTML="EDIT";
-    toggleEditMode(true);
-  }
-  redraw();
-}
 addEventListener('mousedown', (event) => {
-  if(event.target.id=="mode"){
-    toggleEditMode();
-  }
   if(event.target.id!="canvasId")
     return;
   dragging=true;
@@ -305,8 +289,7 @@ class EditGraph extends GraphView{
   }
 }
 
-let alg= new GraphView(new Graph());
-toggleEditMode(true);
+let alg= new EditGraph(new Graph());
 
 function redraw(){
   if(alg!==undefined){
