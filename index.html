@@ -206,6 +206,7 @@ class GraphView{
         let b = -((x0-x)*(x1-x0)+(y0-y)*(y1-y0));
         let c = (x0-x)*(x0-x)+(y0-y)*(y0-y);
         let l = -b/a;
+        if (l>0 || l < -1) return; // closest point not between vertices
         let d = l*l*a+2*l*b+c;
         if(d<1.21*LINE_WIDTH*LINE_WIDTH){
           if (multiFocus) {
